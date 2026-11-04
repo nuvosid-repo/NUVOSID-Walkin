@@ -59,6 +59,8 @@ async function seedAdmin() {
     console.log(`Admin "${username}" already exists, left unchanged.`);
     return;
   }
+  // Build logs shouldn't hold a password, so a deployment never generates and prints one.
+  if (process.env.DEPLOY_SETUP && !process.env.ADMIN_PASSWORD) throw new Error("ADMIN_PASSWORD is not set");
   const password = process.env.ADMIN_PASSWORD || randomBytes(9).toString("base64url");
   await db.user.create({
     data: { username, name: "NUVOSID Admin", role: "ADMIN", passcodeHash: await bcrypt.hash(password, 12) },
@@ -84,6 +86,10 @@ async function seedDemo() {
       await saveDemoModel(demo.id);
       console.log("Demo walkthrough stored in the database.");
     }
+    return;
+  }
+  if (process.env.DEPLOY_SETUP && !process.env.DEMO_PASSCODE) {
+    console.log("DEMO_PASSCODE is not set, so the demo client was skipped.");
     return;
   }
   const company = await db.company.create({ data: { name: DEMO_COMPANY, city: "Udaipur" } });

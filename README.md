@@ -37,7 +37,7 @@ A model can be up to 200 MB. Models and cover images are stored in MongoDB, spli
 - Admin and client sessions use separate cookies, so both can stay signed in at once in one browser.
 - Sessions and viewer links are re-checked against the database on each request. Deactivating a user, resetting a passcode or hiding a project takes effect at once.
 - Uploaded HTML runs in a sandboxed iframe with an opaque origin, so it can't read portal cookies or call portal APIs. It can still load scripts from a CDN.
-- Login attempts are rate limited in memory, which assumes one server process.
+- Login attempts are rate limited in memory, per server process. On Vercel each instance counts separately, so the limit is weaker there.
 
 ## Project layout
 
@@ -58,9 +58,17 @@ To add the real logo, edit `src/components/brand/logo.tsx`. It's the only place 
 
 All data, including 3D models and cover images, lives in MongoDB, so the app runs on Vercel or any Node.js server.
 
-1. In MongoDB Atlas, allow the server's IP address under Network Access. Vercel has no fixed IP, so it needs `0.0.0.0/0`.
-2. Run `npm run setup` once from your machine, with `.env` pointing at the production database.
-3. On the host, set `DATABASE_URL` and `AUTH_SECRET`. Use the same `AUTH_SECRET` as step 2, or saved passcodes can't be viewed.
+### Vercel
+
+1. In MongoDB Atlas, add `0.0.0.0/0` under Network Access, because Vercel has no fixed IP.
+2. In Vercel → Settings → Environment Variables, set `DATABASE_URL`, `AUTH_SECRET`, `ADMIN_USERNAME`, `ADMIN_PASSWORD` and `DEMO_PASSCODE`. Importing a filled-in `.env` file sets them all at once.
+3. Deploy. Each production build creates the indexes, the first admin and the demo client if they don't exist yet, and leaves existing data alone. If the settings are wrong, the build stops with a message saying what to fix, and the last good deployment stays live.
+
+`DATABASE_URL` needs the database name: `...mongodb.net/nuvosid_walkin?retryWrites=true&w=majority`. Atlas's copied string leaves it out.
+
+### Other servers
+
+Run `npm run setup` once with `.env` pointing at the production database, then set `DATABASE_URL` and `AUTH_SECRET` on the server. Use the same `AUTH_SECRET` everywhere, or saved passcodes can't be viewed.
 
 ```bash
 npm run build

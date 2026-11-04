@@ -3,6 +3,7 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
+import { describeServiceError } from "@/lib/config-check";
 import { db } from "@/lib/db";
 import { hashPasscode, verifyAgainstDummy, verifyPasscode } from "@/lib/credentials";
 import { fieldErrorsOf, parseForm, type ActionState } from "@/lib/form";
@@ -26,19 +27,34 @@ async function login(formData: FormData, role: "ADMIN" | "CLIENT"): Promise<Acti
     return { error: "Too many attempts. Please try again in 15 minutes." };
   }
 
-  const user = await db.user.findUnique({ where: { username } });
-  const valid = user ? await verifyPasscode(passcode, user.passcodeHash) : await verifyAgainstDummy(passcode);
+  try {
+    const user = await db.user.findUnique({ where: { username } });
+    const valid = user ? await verifyPasscode(passcode, user.passcodeHash) : await verifyAgainstDummy(passcode);
 
-  if (!user || !valid || user.role !== role) {
-    recordFailure(userKey);
-    recordFailure(ipKey);
-    return { error: "Incorrect ID or passcode." };
+    if (!user || !valid || user.role !== role) {
+      recordFailure(userKey);
+      recordFailure(ipKey);
+      if (role === "ADMIN" && !user && (await db.user.count({ where: { role: "ADMIN" } })) === 0) {
+        return { error: "No admin account exists in this database yet. Set ADMIN_PASSWORD in Vercel and redeploy, or run npm run setup." };
+      }
+      return { error: "Incorrect ID or passcode." };
+    }
+    if (!user.active) return { error: "This account is inactive. Please contact your NUVOSID project lead." };
+
+    clearFailures(userKey);
+    await db.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
+    await createSession(user);
+  } catch (error) {
+    console.error(`Sign in failed (${role}):`, error);
+    return {
+      error:
+        role === "ADMIN"
+          ? `Sign in isn't working: ${describeServiceError(error)}`
+          : "The portal is temporarily unavailable. Please try again shortly, or contact your NUVOSID project lead.",
+    };
   }
-  if (!user.active) return { error: "This account is inactive. Please contact your NUVOSID project lead." };
 
-  clearFailures(userKey);
-  await db.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
-  await createSession(user);
+  // Outside the try: redirect() works by throwing.
   redirect(role === "ADMIN" ? "/admin" : "/projects");
 }
 
