@@ -1,0 +1,90 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// A builder / developer company. Users and projects belong to one company.
+model Company {
+  id            String   @id @default(cuid())
+  name          String
+  contactPerson String   @default("")
+  email         String   @default("")
+  phone         String   @default("")
+  city          String   @default("")
+  address       String   @default("")
+  website       String   @default("")
+  notes         String   @default("")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  users    User[]
+  projects Project[]
+}
+
+model User {
+  id             String    @id @default(cuid())
+  username       String    @unique
+  name           String
+  passcodeHash   String
+  /// AES-GCM copy of a client's passcode so admins can view it. Null for admins and for users created before this field existed.
+  passcodeSealed String?
+  /// "ADMIN" or "CLIENT"
+  role           String    @default("CLIENT")
+  active         Boolean   @default(true)
+  /// Bumped on passcode change or deactivation; invalidates old sessions and viewer links.
+  sessionVersion Int       @default(0)
+  lastLoginAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  companyId String?
+  company   Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+}
+
+model Project {
+  id            String  @id @default(cuid())
+  name          String
+  tagline       String  @default("")
+  propertyType  String  @default("Residential")
+  status        String  @default("Under construction")
+  city          String  @default("")
+  address       String  @default("")
+  configuration String  @default("")
+  area          String  @default("")
+  priceRange    String  @default("")
+  possession    String  @default("")
+  reraNumber    String  @default("")
+  totalFloors   String  @default("")
+  totalUnits    String  @default("")
+  /// Comma separated list
+  amenities     String  @default("")
+  description   String  @default("")
+  /// Whether the company's users can see this project
+  published     Boolean @default(true)
+  /// File extension of the cover image in storage, empty when there is none
+  coverExt      String  @default("")
+
+  /// "html" (pasted or single file) or "zip" (bundle). Null until a model is uploaded.
+  modelKind       String?
+  /// Path of the entry HTML file inside the model folder
+  modelEntry      String?
+  /// Changes on every upload; part of viewer links so caches never go stale
+  modelVersion    String?
+  modelSize       Int       @default(0)
+  modelFileCount  Int       @default(0)
+  modelUploadedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+}
