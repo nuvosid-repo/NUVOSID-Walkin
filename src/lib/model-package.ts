@@ -1,85 +1,77 @@
 import path from "node:path";
-import { unzipSync } from "fflate";
-import { MAX_MODEL_EXTRACTED_BYTES, MAX_MODEL_FILES } from "./constants";
-import type { ModelFile } from "./storage";
+import { db } from "./db";
+import { isJunkModelPath, MAX_MODEL_BYTES, MAX_MODEL_FILES } from "./constants";
 
 export class ModelPackageError extends Error {}
 
-export type ModelPackage = {
-  kind: "html" | "zip";
-  entry: string;
-  files: ModelFile[];
-  size: number;
-  warnings: string[];
-};
-
-export function packageFromHtml(html: string): ModelPackage {
-  if (!html.trim()) throw new ModelPackageError("The HTML is empty.");
-  if (!/<(!doctype|html|body|script|canvas|iframe|div)\b/i.test(html)) {
-    throw new ModelPackageError("This doesn't look like HTML. Paste the full code of the walkthrough page.");
-  }
-  const data = new TextEncoder().encode(html);
-  const entry = "index.html";
-  return {
-    kind: "html",
-    entry,
-    files: [{ path: entry, data }],
-    size: data.byteLength,
-    warnings: missingFileWarnings(html, entry, new Set([entry])),
-  };
-}
-
-export function packageFromZip(buffer: Uint8Array): ModelPackage {
-  let declaredTotal = 0;
-  let declaredCount = 0;
-  let unzipped: Record<string, Uint8Array>;
-  try {
-    unzipped = unzipSync(buffer, {
-      filter(file) {
-        if (isJunk(file.name) || file.name.endsWith("/")) return false;
-        declaredTotal += file.originalSize;
-        declaredCount += 1;
-        if (declaredTotal > MAX_MODEL_EXTRACTED_BYTES || declaredCount > MAX_MODEL_FILES) {
-          throw new ModelPackageError("This ZIP is too large once extracted.");
-        }
-        return true;
-      },
-    });
-  } catch (error) {
-    if (error instanceof ModelPackageError) throw error;
-    throw new ModelPackageError("This file couldn't be read as a ZIP.");
-  }
-
-  const files: ModelFile[] = Object.entries(unzipped).map(([name, data]) => ({ path: safePath(name), data }));
-  if (!files.length) throw new ModelPackageError("This ZIP is empty.");
-
-  const entry = findEntry(files);
-  if (!entry) throw new ModelPackageError("No HTML file found in this ZIP. Include an index.html.");
-
-  const html = new TextDecoder().decode(files.find((file) => file.path === entry)!.data);
-  return {
-    kind: "zip",
-    entry,
-    files,
-    size: files.reduce((total, file) => total + file.data.byteLength, 0),
-    warnings: missingFileWarnings(html, entry, new Set(files.map((file) => file.path))),
-  };
-}
-
-function isJunk(name: string) {
-  return name.startsWith("__MACOSX/") || name.split("/").some((part) => part === ".DS_Store" || part === "Thumbs.db");
-}
-
-function safePath(name: string) {
+/** Normalizes a file path from an upload, or returns null if it's unusable. */
+export function cleanModelPath(name: string) {
   const normalized = path.posix.normalize(name.replaceAll("\\", "/"));
-  if (normalized.startsWith("/") || normalized.startsWith("../") || normalized === ".." || /^[a-zA-Z]:/.test(normalized)) {
-    throw new ModelPackageError(`Unsafe file path in ZIP: ${name}`);
+  if (
+    !normalized ||
+    normalized === "." ||
+    normalized === ".." ||
+    normalized.startsWith("../") ||
+    normalized.startsWith("/") ||
+    /^[a-zA-Z]:/.test(normalized) ||
+    isJunkModelPath(normalized)
+  ) {
+    return null;
   }
   return normalized;
 }
 
-function findEntry(files: ModelFile[]) {
-  const html = files.map((file) => file.path).filter((name) => /\.html?$/i.test(name));
+type FinishedModel = { entry: string; size: number; fileCount: number; warnings: string[] };
+
+/** Checks an uploaded version is complete and usable, before it replaces the live model. */
+export async function checkUploadedModel(projectId: string, version: string, kind: "html" | "zip"): Promise<FinishedModel> {
+  const chunks = await db.modelChunk.findMany({
+    where: { projectId, version },
+    select: { path: true, index: true, total: true, size: true },
+  });
+
+  const files = new Map<string, { total: number; received: number }>();
+  let size = 0;
+  for (const chunk of chunks) {
+    const file = files.get(chunk.path) ?? { total: chunk.total, received: 0 };
+    file.received += 1;
+    files.set(chunk.path, file);
+    size += chunk.size;
+  }
+
+  if (!files.size) throw new ModelPackageError("Nothing was uploaded. Please try again.");
+  if (size > MAX_MODEL_BYTES) throw new ModelPackageError("This model is larger than the 200 MB limit.");
+  if (files.size > MAX_MODEL_FILES) throw new ModelPackageError("This model has too many files.");
+  for (const [name, file] of files) {
+    if (file.received !== file.total) throw new ModelPackageError(`${name} didn't upload completely. Please try again.`);
+  }
+
+  const names = [...files.keys()];
+  const entry = findEntry(names);
+  if (!entry) throw new ModelPackageError("No HTML file found. Include an index.html.");
+
+  const html = await readEntryHtml(projectId, version, entry);
+  if (kind === "html") {
+    if (!html.trim()) throw new ModelPackageError("The HTML is empty.");
+    if (!/<(!doctype|html|body|script|canvas|iframe|div)\b/i.test(html)) {
+      throw new ModelPackageError("This doesn't look like HTML. Paste the full code of the walkthrough page.");
+    }
+  }
+
+  return { entry, size, fileCount: names.length, warnings: missingFileWarnings(html, entry, new Set(names)) };
+}
+
+async function readEntryHtml(projectId: string, version: string, entry: string) {
+  const chunks = await db.modelChunk.findMany({
+    where: { projectId, version, path: entry },
+    orderBy: { index: "asc" },
+    select: { data: true },
+  });
+  return Buffer.concat(chunks.map((chunk) => chunk.data)).toString("utf8");
+}
+
+function findEntry(names: string[]) {
+  const html = names.filter((name) => /\.html?$/i.test(name));
   const byDepth = (a: string, b: string) => a.split("/").length - b.split("/").length || a.localeCompare(b);
   const index = html.filter((name) => /(^|\/)index\.html?$/i.test(name)).sort(byDepth);
   return index[0] ?? html.sort(byDepth)[0];
@@ -89,7 +81,7 @@ function findEntry(files: ModelFile[]) {
  * A walkthrough page often loads local files (three.module.js, voice.js...). Pasting only
  * the HTML leaves a blank screen, so name the missing files for the admin instead.
  */
-export function missingFileWarnings(html: string, entry: string, available: Set<string>) {
+function missingFileWarnings(html: string, entry: string, available: Set<string>) {
   const refs = new Set<string>();
   const patterns = [
     /\b(?:src|href)\s*=\s*["']([^"']+)["']/gi,

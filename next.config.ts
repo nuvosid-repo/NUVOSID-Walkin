@@ -10,8 +10,8 @@ const nextConfig: NextConfig = {
     },
   },
   experimental: {
-    // Cover images go through a Server Action. 3D models use their own route handler.
-    serverActions: { bodySizeLimit: "12mb" },
+    // Cover images go through a Server Action. 3D models are uploaded in chunks by their own route.
+    serverActions: { bodySizeLimit: "4.4mb" },
   },
 };
 

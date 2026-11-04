@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { SelectField, TextAreaField, TextField } from "@/components/ui/field";
 import { FormAlert } from "@/components/ui/form-alert";
 import { useActionForm } from "@/components/ui/use-action-form";
-import { PROJECT_STATUSES, PROPERTY_TYPES } from "@/lib/constants";
+import { MAX_COVER_BYTES, PROJECT_STATUSES, PROPERTY_TYPES } from "@/lib/constants";
 import type { ActionState } from "@/lib/form";
 
 type ProjectFormProps = {
@@ -69,7 +69,12 @@ export function ProjectForm({ action, companies, project, defaultCompanyId, subm
           name="cover"
           type="file"
           accept="image/jpeg,image/png,image/webp"
-          hint="JPG, PNG or WebP, up to 10 MB. Shown on the project card."
+          hint="JPG, PNG or WebP, up to 4 MB. Shown on the project card."
+          onChange={(event) => {
+            // Stops the upload in the browser, since a larger request never reaches the server's own check.
+            const file = event.target.files?.[0];
+            event.target.setCustomValidity(file && file.size > MAX_COVER_BYTES ? "Cover image must be under 4 MB" : "");
+          }}
           error={errors.cover}
           className="sm:col-span-2 [&_input]:h-auto [&_input]:cursor-pointer [&_input]:py-2 [&_input]:file:mr-3 [&_input]:file:cursor-pointer [&_input]:file:rounded-md [&_input]:file:border-0 [&_input]:file:bg-raised [&_input]:file:px-3 [&_input]:file:py-1 [&_input]:file:text-[13px] [&_input]:file:text-ink"
         />

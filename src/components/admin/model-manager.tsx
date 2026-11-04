@@ -10,6 +10,7 @@ import { Button, buttonClass } from "@/components/ui/button";
 import { ConfirmButton } from "@/components/ui/confirm-button";
 import { FormAlert } from "@/components/ui/form-alert";
 import { formatBytes, formatDate } from "@/lib/format";
+import { fileFromHtml, filesFromUpload, uploadModel, type UploadProgress } from "./model-upload";
 
 type ModelInfo = {
   kind: string;
@@ -29,36 +30,32 @@ export function ModelManager({ projectId, model }: { projectId: string; model: M
   const [error, setError] = useState<string>();
   const [success, setSuccess] = useState<string>();
   const [warnings, setWarnings] = useState<string[]>([]);
+  const [progress, setProgress] = useState<UploadProgress | null>(null);
   const [pending, startTransition] = useTransition();
 
   const url = `/api/admin/projects/${projectId}/model`;
   const canSubmit = mode === "paste" ? html.trim().length > 0 : !!file;
 
   function upload() {
-    const body = new FormData();
-    if (mode === "paste") body.set("html", html);
-    else if (file) body.set("file", file);
-
     setError(undefined);
     setSuccess(undefined);
     setWarnings([]);
+    setProgress(null);
 
     startTransition(async () => {
       try {
-        const response = await fetch(url, { method: "POST", body });
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          setError(result.error ?? "The upload failed. Please try again.");
-          return;
-        }
+        const prepared = mode === "paste" ? fileFromHtml(html) : await filesFromUpload(file!);
+        const result = await uploadModel(projectId, prepared, setProgress);
         setHtml("");
         setFile(null);
         setFileInputKey((key) => key + 1);
-        setWarnings(result.warnings ?? []);
+        setWarnings(result.warnings);
         setSuccess("3D model uploaded.");
         router.refresh();
-      } catch {
-        setError("The upload failed. Check your connection and try again.");
+      } catch (uploadError) {
+        setError(uploadError instanceof Error ? uploadError.message : "The upload failed. Please try again.");
+      } finally {
+        setProgress(null);
       }
     });
   }
@@ -130,7 +127,7 @@ export function ModelManager({ projectId, model }: { projectId: string; model: M
             <label htmlFor="model-file" className="flex cursor-pointer flex-col items-center rounded-lg border border-dashed border-line-strong bg-bg px-6 py-10 text-center transition-colors hover:border-gold">
               <FileUp className="mb-3 size-6 text-muted" aria-hidden />
               <span className="text-sm font-medium">{file ? file.name : "Choose an .html or .zip file"}</span>
-              <span className="mt-1 text-xs text-muted">{file ? formatBytes(file.size) : "Up to 300 MB"}</span>
+              <span className="mt-1 text-xs text-muted">{file ? formatBytes(file.size) : "Up to 200 MB"}</span>
             </label>
             <input
               key={fileInputKey}
@@ -153,9 +150,16 @@ export function ModelManager({ projectId, model }: { projectId: string; model: M
       ))}
       <FormAlert error={error} success={warnings.length ? undefined : success} />
 
-      <Button onClick={upload} pending={pending} disabled={!canSubmit}>
-        {pending ? "Uploading…" : model ? "Replace model" : "Upload model"}
-      </Button>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button onClick={upload} pending={pending} disabled={!canSubmit}>
+          {pending ? "Uploading…" : model ? "Replace model" : "Upload model"}
+        </Button>
+        {progress && (
+          <span role="status" className="text-[13px] tabular-nums text-muted">
+            {formatBytes(progress.sent)} of {formatBytes(progress.total)} · {Math.round((progress.sent / Math.max(progress.total, 1)) * 100)}%
+          </span>
+        )}
+      </div>
     </div>
   );
 }

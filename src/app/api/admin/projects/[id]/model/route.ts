@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { NextResponse, type NextRequest } from "next/server";
-import { MAX_MODEL_UPLOAD_BYTES } from "@/lib/constants";
+import { MODEL_CHUNK_BYTES } from "@/lib/constants";
 import { db } from "@/lib/db";
-import { ModelPackageError, packageFromHtml, packageFromZip, type ModelPackage } from "@/lib/model-package";
+import { checkUploadedModel, cleanModelPath, ModelPackageError } from "@/lib/model-package";
 import { getCurrentAdmin } from "@/lib/session";
-import { removeModelFiles, replaceModelFiles } from "@/lib/storage";
+
+// Upload steps: POST "start", PUT each chunk, POST "finish". The live model only
+// changes at "finish", so a failed or abandoned upload leaves it untouched.
 
 type Context = RouteContext<"/api/admin/projects/[id]/model">;
 
@@ -14,7 +16,7 @@ const fail = (error: string, status = 400) => NextResponse.json({ error }, { sta
 async function authorize(context: Context) {
   if (!(await getCurrentAdmin())) return null;
   const { id } = await context.params;
-  return db.project.findUnique({ where: { id } });
+  return db.project.findUnique({ where: { id }, select: { id: true, modelVersion: true } });
 }
 
 function refresh() {
@@ -26,61 +28,80 @@ export async function POST(request: NextRequest, context: Context) {
   const project = await authorize(context);
   if (!project) return fail("Not allowed.", 403);
 
-  if (Number(request.headers.get("content-length") ?? 0) > MAX_MODEL_UPLOAD_BYTES) {
-    return fail("This upload is larger than the 300 MB limit.", 413);
+  const body = await request.json().catch(() => null);
+
+  if (body?.action === "start") {
+    // Clears pieces left by earlier uploads that never finished.
+    await db.modelChunk.deleteMany({
+      where: { projectId: project.id, version: { not: project.modelVersion ?? "" } },
+    });
+    return NextResponse.json({ version: randomUUID().slice(0, 8) });
   }
 
-  let form: FormData;
-  try {
-    form = await request.formData();
-  } catch {
-    return fail("The upload could not be read. Please try again.");
-  }
-
-  let modelPackage: ModelPackage;
-  try {
-    const file = form.get("file");
-    const html = form.get("html");
-    if (file instanceof File && file.size > 0) {
-      const data = new Uint8Array(await file.arrayBuffer());
-      if (/\.zip$/i.test(file.name)) modelPackage = packageFromZip(data);
-      else if (/\.html?$/i.test(file.name)) modelPackage = packageFromHtml(new TextDecoder().decode(data));
-      else return fail("Upload an .html or .zip file.");
-    } else if (typeof html === "string") {
-      modelPackage = packageFromHtml(html);
-    } else {
-      return fail("Paste the HTML code or choose a file.");
+  if (body?.action === "finish" && typeof body.version === "string") {
+    const kind = body.kind === "zip" ? "zip" : "html";
+    try {
+      const model = await checkUploadedModel(project.id, body.version, kind);
+      await db.project.update({
+        where: { id: project.id },
+        data: {
+          modelKind: kind,
+          modelEntry: model.entry,
+          modelVersion: body.version,
+          modelSize: model.size,
+          modelFileCount: model.fileCount,
+          modelUploadedAt: new Date(),
+        },
+      });
+      await db.modelChunk.deleteMany({ where: { projectId: project.id, version: { not: body.version } } });
+      refresh();
+      return NextResponse.json({ ok: true, warnings: model.warnings });
+    } catch (error) {
+      await db.modelChunk.deleteMany({ where: { projectId: project.id, version: body.version } });
+      if (error instanceof ModelPackageError) return fail(error.message);
+      throw error;
     }
-  } catch (error) {
-    if (error instanceof ModelPackageError) return fail(error.message);
-    throw error;
   }
 
-  await replaceModelFiles(project.id, modelPackage.files);
-  await db.project.update({
-    where: { id: project.id },
-    data: {
-      modelKind: modelPackage.kind,
-      modelEntry: modelPackage.entry,
-      modelVersion: randomUUID().slice(0, 8),
-      modelSize: modelPackage.size,
-      modelFileCount: modelPackage.files.length,
-      modelUploadedAt: new Date(),
-    },
+  return fail("Unknown upload step.");
+}
+
+export async function PUT(request: NextRequest, context: Context) {
+  const project = await authorize(context);
+  if (!project) return fail("Not allowed.", 403);
+
+  const params = request.nextUrl.searchParams;
+  const version = params.get("version");
+  const filePath = cleanModelPath(params.get("path") ?? "");
+  const index = Number(params.get("index"));
+  const total = Number(params.get("total"));
+
+  if (!version || version === project.modelVersion) return fail("Invalid upload.");
+  if (!filePath) return fail(`Unsafe file path: ${params.get("path")}`);
+  if (!Number.isInteger(index) || !Number.isInteger(total) || index < 0 || total < 1 || index >= total) {
+    return fail("Invalid upload.");
+  }
+
+  const data = new Uint8Array(await request.arrayBuffer());
+  if (data.byteLength > MODEL_CHUNK_BYTES) return fail("This piece of the upload is too large.", 413);
+
+  await db.modelChunk.upsert({
+    where: { projectId_version_path_index: { projectId: project.id, version, path: filePath, index } },
+    create: { projectId: project.id, version, path: filePath, index, total, size: data.byteLength, data },
+    update: { total, size: data.byteLength, data },
   });
-  refresh();
-  return NextResponse.json({ ok: true, warnings: modelPackage.warnings });
+  return NextResponse.json({ ok: true });
 }
 
 export async function DELETE(_request: NextRequest, context: Context) {
   const project = await authorize(context);
   if (!project) return fail("Not allowed.", 403);
 
-  await removeModelFiles(project.id);
   await db.project.update({
     where: { id: project.id },
     data: { modelKind: null, modelEntry: null, modelVersion: null, modelSize: 0, modelFileCount: 0, modelUploadedAt: null },
   });
+  await db.modelChunk.deleteMany({ where: { projectId: project.id } });
   refresh();
   return NextResponse.json({ ok: true });
 }

@@ -1,11 +1,7 @@
-import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
 import path from "node:path";
-import { Readable } from "node:stream";
 import type { NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { canViewProject } from "@/lib/session";
-import { resolveModelFile } from "@/lib/storage";
 import { verifyWalkthroughToken } from "@/lib/walkthrough-token";
 
 const MIME: Record<string, string> = {
@@ -69,20 +65,53 @@ export async function GET(_request: NextRequest, context: RouteContext<"/walkthr
   if (!project?.modelVersion || project.modelVersion !== access.version) return notFound();
   if (!canViewProject(user, project)) return notFound();
 
-  const file = resolveModelFile(project.id, segments);
-  if (!file) return notFound();
-  const info = await stat(file).catch(() => null);
-  if (!info?.isFile()) return notFound();
+  const key = { projectId: project.id, version: project.modelVersion };
+  const filePath = segments.map(safeDecode).join("/");
+  const chunks = await db.modelChunk.findMany({
+    where: { ...key, path: filePath },
+    orderBy: { index: "asc" },
+    select: { index: true, size: true },
+  });
+  if (!chunks.length) return notFound();
 
-  const ext = path.extname(file).toLowerCase();
+  // Loaded one chunk at a time, so a large file is never held in memory whole.
+  let next = 0;
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (next >= chunks.length) {
+        controller.close();
+        return;
+      }
+      const chunk = await db.modelChunk.findUnique({
+        where: { projectId_version_path_index: { ...key, path: filePath, index: chunks[next].index } },
+        select: { data: true },
+      });
+      if (!chunk) {
+        controller.error(new Error(`Missing chunk of ${filePath}`));
+        return;
+      }
+      controller.enqueue(chunk.data);
+      next += 1;
+    },
+  });
+
+  const ext = path.extname(filePath).toLowerCase();
   const isHtml = ext === ".html" || ext === ".htm";
 
-  return new Response(Readable.toWeb(createReadStream(file)) as ReadableStream, {
+  return new Response(body, {
     headers: {
       ...SECURITY_HEADERS,
       "Content-Type": MIME[ext] ?? "application/octet-stream",
-      "Content-Length": String(info.size),
+      "Content-Length": String(chunks.reduce((total, chunk) => total + chunk.size, 0)),
       "Cache-Control": isHtml ? "private, no-store" : "private, max-age=3600",
     },
   });
+}
+
+function safeDecode(segment: string) {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
 }

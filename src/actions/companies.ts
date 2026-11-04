@@ -6,7 +6,6 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { fieldErrorsOf, parseForm, type ActionState } from "@/lib/form";
 import { requireAdmin } from "@/lib/session";
-import { removeProjectFiles } from "@/lib/storage";
 
 const companySchema = z.object({
   name: z.string().trim().min(2, "Enter the company name").max(120),
@@ -39,9 +38,7 @@ export async function updateCompanyAction(id: string, _: ActionState, formData: 
 
 export async function deleteCompanyAction(id: string) {
   await requireAdmin();
-  const projects = await db.project.findMany({ where: { companyId: id }, select: { id: true } });
   await db.company.delete({ where: { id } });
-  await Promise.all(projects.map((project) => removeProjectFiles(project.id)));
   revalidatePath("/admin", "layout");
   redirect("/admin/companies");
 }

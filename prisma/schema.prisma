@@ -86,5 +86,36 @@ model Project {
   companyId String
   company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
+  cover  ProjectCover?
+  chunks ModelChunk[]
+
   @@index([companyId])
+}
+
+/// Cover image bytes. Kept apart from Project so listing projects never loads images.
+model ProjectCover {
+  id   String @id @default(cuid()) @map("_id")
+  data Bytes
+
+  projectId String  @unique
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+/// One piece of one file of a 3D model. Files are split so uploads fit Vercel's request limit.
+model ModelChunk {
+  id      String @id @default(cuid()) @map("_id")
+  /// Matches Project.modelVersion once the upload is finished
+  version String
+  /// File path inside the model, like "addons/shaders/CopyShader.js"
+  path    String
+  index   Int
+  /// Number of chunks in this file
+  total   Int
+  size    Int
+  data    Bytes
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, version, path, index])
 }

@@ -1,29 +1,56 @@
 import { randomBytes } from "node:crypto";
-import { cp, readdir, rm, stat } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import { MODEL_CHUNK_BYTES } from "../src/lib/constants";
 import { sealPasscode } from "../src/lib/passcode-vault";
 
 const db = new PrismaClient();
 const DEMO_USERNAME = "crystal.demo";
 const DEMO_COMPANY = "Shubh Shanti Construction";
 
-async function directorySize(dir: string): Promise<{ size: number; count: number }> {
-  let size = 0;
-  let count = 0;
+async function listFiles(dir: string, prefix = ""): Promise<string[]> {
+  const names: string[] = [];
   for (const entry of await readdir(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      const nested = await directorySize(full);
-      size += nested.size;
-      count += nested.count;
-    } else {
-      size += (await stat(full)).size;
-      count += 1;
+    const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) names.push(...(await listFiles(path.join(dir, entry.name), relative)));
+    else names.push(relative);
+  }
+  return names;
+}
+
+/** Stores the Crystal Heights walkthrough in the database as this project's live model. */
+async function saveDemoModel(projectId: string) {
+  const source = path.resolve("prisma/seed-assets/crystal-heights");
+  const files = await listFiles(source);
+  const version = randomBytes(4).toString("hex");
+  let size = 0;
+
+  for (const file of files) {
+    const data = await readFile(path.join(source, file));
+    size += data.byteLength;
+    const total = Math.max(1, Math.ceil(data.byteLength / MODEL_CHUNK_BYTES));
+    for (let index = 0; index < total; index++) {
+      const part = data.subarray(index * MODEL_CHUNK_BYTES, (index + 1) * MODEL_CHUNK_BYTES);
+      await db.modelChunk.create({
+        data: { projectId, version, path: file, index, total, size: part.byteLength, data: part },
+      });
     }
   }
-  return { size, count };
+
+  await db.project.update({
+    where: { id: projectId },
+    data: {
+      modelKind: "zip",
+      modelEntry: "index.html",
+      modelVersion: version,
+      modelSize: size,
+      modelFileCount: files.length,
+      modelUploadedAt: new Date(),
+    },
+  });
+  await db.modelChunk.deleteMany({ where: { projectId, version: { not: version } } });
 }
 
 async function seedAdmin() {
@@ -51,6 +78,12 @@ async function seedDemo() {
     } else {
       console.log("Demo client already exists, left unchanged.");
     }
+    // Databases seeded when models lived on disk: bring the demo walkthrough in.
+    const demo = await db.project.findFirst({ where: { companyId: existing.companyId ?? "", name: "Crystal Heights" } });
+    if (demo && !(await db.modelChunk.findFirst({ where: { projectId: demo.id }, select: { id: true } }))) {
+      await saveDemoModel(demo.id);
+      console.log("Demo walkthrough stored in the database.");
+    }
     return;
   }
   const company = await db.company.create({ data: { name: DEMO_COMPANY, city: "Udaipur" } });
@@ -65,8 +98,6 @@ async function seedDemo() {
     },
   });
 
-  const source = path.resolve("prisma/seed-assets/crystal-heights");
-  const { size, count } = await directorySize(source);
   const project = await db.project.create({
     data: {
       companyId: company.id,
@@ -78,18 +109,9 @@ async function seedDemo() {
       configuration: "3 BHK",
       area: "1834 sq.ft",
       description: "Interactive 3D model of the sample flat, built from the brochure plan and specification sheet. Walk through every room with the Hindi voice guide.",
-      modelKind: "zip",
-      modelEntry: "index.html",
-      modelVersion: randomBytes(4).toString("hex"),
-      modelSize: size,
-      modelFileCount: count,
-      modelUploadedAt: new Date(),
     },
   });
-
-  const target = path.resolve(process.env.STORAGE_DIR || "./storage", "models", project.id);
-  await rm(target, { recursive: true, force: true });
-  await cp(source, target, { recursive: true });
+  await saveDemoModel(project.id);
 
   console.log(`Demo client    → ID: ${DEMO_USERNAME}`);
   if (!process.env.DEMO_PASSCODE) console.log(`                 Passcode: ${passcode}`);

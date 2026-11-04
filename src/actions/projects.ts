@@ -7,7 +7,6 @@ import { MAX_COVER_BYTES, PROJECT_STATUSES, PROPERTY_TYPES } from "@/lib/constan
 import { db } from "@/lib/db";
 import { fieldErrorsOf, parseForm, type ActionState } from "@/lib/form";
 import { requireAdmin } from "@/lib/session";
-import { removeCover, removeProjectFiles, writeCover } from "@/lib/storage";
 
 const text = (max: number) => z.string().trim().max(max);
 
@@ -42,11 +41,15 @@ function detectImageExt(bytes: Uint8Array) {
 async function readCover(formData: FormData) {
   const file = formData.get("cover");
   if (!(file instanceof File) || file.size === 0) return { cover: null };
-  if (file.size > MAX_COVER_BYTES) return { coverError: "Cover image must be under 10 MB" };
+  if (file.size > MAX_COVER_BYTES) return { coverError: "Cover image must be under 4 MB" };
   const data = new Uint8Array(await file.arrayBuffer());
   const ext = detectImageExt(data);
   if (!ext) return { coverError: "Use a JPG, PNG or WebP image" };
   return { cover: { ext, data } };
+}
+
+function saveCover(projectId: string, data: Uint8Array<ArrayBuffer>) {
+  return db.projectCover.upsert({ where: { projectId }, create: { projectId, data }, update: { data } });
 }
 
 const fix = "Please fix the highlighted fields.";
@@ -62,7 +65,7 @@ export async function createProjectAction(_: ActionState, formData: FormData): P
   if (coverError) return { error: fix, fieldErrors: { cover: [coverError] } };
 
   const project = await db.project.create({ data: { ...parsed.data, coverExt: cover?.ext ?? "" } });
-  if (cover) await writeCover(project.id, cover.ext, cover.data);
+  if (cover) await saveCover(project.id, cover.data);
 
   revalidatePath("/admin", "layout");
   redirect(`/admin/projects/${project.id}?created=1`);
@@ -83,8 +86,8 @@ export async function updateProjectAction(id: string, _: ActionState, formData: 
     where: { id },
     data: { ...parsed.data, ...(cover ? { coverExt: cover.ext } : removing ? { coverExt: "" } : {}) },
   });
-  if (cover) await writeCover(id, cover.ext, cover.data);
-  else if (removing) await removeCover(id);
+  if (cover) await saveCover(id, cover.data);
+  else if (removing) await db.projectCover.deleteMany({ where: { projectId: id } });
 
   revalidatePath("/admin", "layout");
   revalidatePath("/projects", "layout");
@@ -101,7 +104,6 @@ export async function setProjectPublishedAction(id: string, published: boolean) 
 export async function deleteProjectAction(id: string, options?: { goToList?: boolean }) {
   await requireAdmin();
   await db.project.delete({ where: { id } });
-  await removeProjectFiles(id);
   revalidatePath("/admin", "layout");
   revalidatePath("/projects", "layout");
   if (options?.goToList) redirect("/admin/projects");
