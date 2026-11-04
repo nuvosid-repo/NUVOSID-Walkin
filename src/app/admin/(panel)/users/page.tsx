@@ -21,7 +21,7 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
     db.user.findMany({
       where: {
         role: "CLIENT",
-        ...(q ? { OR: [{ name: { contains: q } }, { username: { contains: q } }, { company: { name: { contains: q } } }] } : {}),
+        ...(q ? { OR: [{ name: { contains: q, mode: "insensitive" } }, { username: { contains: q, mode: "insensitive" } }, { company: { name: { contains: q, mode: "insensitive" } } }] } : {}),
       },
       orderBy: { createdAt: "desc" },
       include: { company: { select: { id: true, name: true } } },

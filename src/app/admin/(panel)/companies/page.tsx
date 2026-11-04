@@ -17,7 +17,7 @@ export default async function CompaniesPage({ searchParams }: { searchParams: Pr
   await requireAdmin();
   const q = (await searchParams).q?.trim() ?? "";
   const companies = await db.company.findMany({
-    where: q ? { OR: [{ name: { contains: q } }, { city: { contains: q } }, { contactPerson: { contains: q } }] } : undefined,
+    where: q ? { OR: [{ name: { contains: q, mode: "insensitive" } }, { city: { contains: q, mode: "insensitive" } }, { contactPerson: { contains: q, mode: "insensitive" } }] } : undefined,
     orderBy: { createdAt: "desc" },
     include: { _count: { select: { users: true, projects: true } } },
   });

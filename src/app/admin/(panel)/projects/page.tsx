@@ -16,7 +16,7 @@ export default async function AdminProjectsPage({ searchParams }: { searchParams
   await requireAdmin();
   const q = (await searchParams).q?.trim() ?? "";
   const projects = await db.project.findMany({
-    where: q ? { OR: [{ name: { contains: q } }, { city: { contains: q } }, { company: { name: { contains: q } } }] } : undefined,
+    where: q ? { OR: [{ name: { contains: q, mode: "insensitive" } }, { city: { contains: q, mode: "insensitive" } }, { company: { name: { contains: q, mode: "insensitive" } } }] } : undefined,
     orderBy: { updatedAt: "desc" },
     include: { company: { select: { id: true, name: true } } },
   });

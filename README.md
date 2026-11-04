@@ -1,6 +1,6 @@
 # NUVOSID Walkthrough Portal
 
-Admin portal and client portal for sharing interactive 3D property walkthroughs. Next.js 16, Prisma with SQLite, Tailwind CSS 4.
+Admin portal and client portal for sharing interactive 3D property walkthroughs. Next.js 16, Prisma with MongoDB, Tailwind CSS 4.
 
 - **Admin** (`/admin`): add builder companies, create user logins, enter property details, upload 3D models.
 - **Client** (`/login`): sign in with the shared user ID and passcode, see the company's projects as cards, open a 3D model.
@@ -9,8 +9,8 @@ Admin portal and client portal for sharing interactive 3D property walkthroughs.
 
 ```bash
 npm install
-cp .env.example .env     # set AUTH_SECRET and ADMIN_PASSWORD
-npm run setup            # creates the database, the admin and the demo client
+cp .env.example .env     # set DATABASE_URL, AUTH_SECRET and ADMIN_PASSWORD
+npm run setup            # creates the indexes, the admin and the demo client
 npm run dev
 ```
 
@@ -54,11 +54,13 @@ To add the real logo, edit `src/components/brand/logo.tsx`. It's the only place 
 
 ## Deployment
 
-The app keeps its database and uploads on local disk, so it needs a server with a persistent disk (a VPS, for example). On Vercel or other serverless hosts, uploads would be lost; moving there requires Postgres and object storage (S3 or R2).
+Data lives in MongoDB, but uploaded 3D models and cover images are still on local disk, so the app needs a server with a persistent disk (a VPS, for example). On Vercel or other serverless hosts, uploads would be lost until they move to object storage (Vercel Blob, S3 or R2).
+
+In MongoDB Atlas, allow the server's IP address under Network Access.
 
 ```bash
 npm run build
 npm start
 ```
 
-Back up `prisma/dev.db` (or wherever `DATABASE_URL` points) and the `storage/` folder. Run behind HTTPS. If the site must run on plain HTTP for a while, set `COOKIE_SECURE="false"`, or login won't persist.
+Back up the MongoDB database and the `storage/` folder. Run behind HTTPS. If the site must run on plain HTTP for a while, set `COOKIE_SECURE="false"`, or login won't persist.
